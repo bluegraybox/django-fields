@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import random
+import string
 import unittest
 
 from django.db import connection
@@ -15,8 +17,45 @@ class PickleObject(models.Model):
     name = models.CharField(max_length=16)
     data = PickleField()
 
-class EncryptTests(unittest.TestCase):
+class RandomChoiceMonkeyPatch():
+    def __init__(self):
+        def patched_choice(sequence):
+            """Instead of choosing a random char from sequence, cycle through them order."""
+            patched_choice.index = (patched_choice.index + 1) % len(sequence)
+            return sequence[patched_choice.index]
+        patched_choice.index = 0
+        self.old_choice = random.choice
+        random.choice = patched_choice  # monkey patch!
 
+    def remove(self):
+        # Remove monkey patch
+        random.choice = self.old_choice
+
+
+class RandomChoiceMonkeyPatchTests(unittest.TestCase):
+    def testMonkeyPatch(self):
+        """
+        Test that we can make random.choice() provide different values, rather than truly random ones.
+        """
+        patch = RandomChoiceMonkeyPatch()
+        # If we get len(choices) from patched_choice(), they should be unique,
+        # which they probably wouldn't be if they were truly random.
+        choices = string.printable
+        max = len(choices)
+        char_set = set([random.choice(choices) for index in range(max)])
+        self.assertEqual(max, len(char_set))
+        # Remove monkey patch
+        patch.remove()
+        # Make sure it works the old way now.
+        char_set = set([random.choice(choices) for index in range(max)])
+        # There are 100 chars in string.printable.
+        # Out of 100 choices, there should be at least one dupe.
+        # The chance of randomly generating 100 unique characters is about 10^-42 (100!/(100^100)).
+        # I'm ok with that.  If this test fails, buy a lottery ticket.  ;)
+        self.assertTrue(max > len(char_set))
+
+
+class EncryptTests(unittest.TestCase):
     def setUp(self):
         EncObject.objects.all().delete()
 
@@ -61,9 +100,9 @@ class EncryptTests(unittest.TestCase):
         The same password should not encrypt the same way twice.
         Check different lengths.
         """
-        # NOTE:  This may fail occasionally because the randomly-generated padding could be the same for both values.
-        # A 14-char string will only have 1 char of padding.  There's a 1/len(string.printable) chance of getting the
-        # same value twice.
+        # Monkey patch to guarantee that padding for each field will be different,
+        # which it might not be (1/100 chance) if it were truly random.
+        patch = RandomChoiceMonkeyPatch()
         for pwd_length in range(1,15) + range(17,21):  # 1-14, 17-20 inclusive
             enc_pwd_1, enc_pwd_2 = self._get_two_passwords(pwd_length)
             self.assertNotEqual(enc_pwd_1, enc_pwd_2)
@@ -73,6 +112,7 @@ class EncryptTests(unittest.TestCase):
         self.assertEqual(enc_pwd_1, enc_pwd_2)
         enc_pwd_1, enc_pwd_2 = self._get_two_passwords(16)
         self.assertEqual(enc_pwd_1, enc_pwd_2)
+        patch.remove()
 
     ### Utility methods for tests ###
 
